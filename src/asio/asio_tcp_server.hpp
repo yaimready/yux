@@ -1,3 +1,20 @@
+/*
+ * This is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this software; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307,
+ * USA.
+ */
+
 #ifndef YUX_ASIO_TCP_SERVER_HPP_
 #define YUX_ASIO_TCP_SERVER_HPP_
 
@@ -18,8 +35,8 @@ class asio_tcp_server:boost::noncopyable{
 
     enum { starting_status=0,running_status=1,not_ready_status=2,ready_status=3 };
 
-    // 必须引用自yux::asio::asio_tcp_data_allocator，
-    // 因为我是通过万能指针(void *)来传递allocator的。
+    // 因为是通过万能指针(void *)来传递allocator的，
+    // 所以为了保持100%一致，tcp_data_allocator_type必须引用自yux::asio::asio_tcp_data_allocator。
     typedef yux::asio::asio_tcp_data_allocator tcp_data_allocator_type;
 
     typedef yux::fixed_allocator::object_allocator1<
