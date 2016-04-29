@@ -42,7 +42,7 @@ public:
     Return:         // нч
     *************************************************/
     ~asio_tcp_worker(){
-        data_->get_allocator().destruct(data_);
+        data_->destroy_self();
     }
 
 public:
