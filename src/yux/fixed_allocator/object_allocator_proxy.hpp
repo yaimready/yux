@@ -1,14 +1,14 @@
-/* 
+/*
  * This is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This software is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this software; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307,
@@ -104,7 +104,7 @@ struct object_allocator0:public object_allocator_proxy<ObjectType,AllocatorType>
 
 public:
 
-    object_allocator0():object_allocator_proxy(allocator_){
+    object_allocator0():object_allocator_proxy<ObjectType,AllocatorType>(allocator_){
         //
     }
 
@@ -118,7 +118,7 @@ struct object_allocator1:public object_allocator_proxy<ObjectType,AllocatorType>
 public:
 
     template <typename A1>
-    object_allocator1(A1 arg1):allocator_(arg1),object_allocator_proxy(allocator_){
+    object_allocator1(A1 arg1):allocator_(arg1),object_allocator_proxy<ObjectType,AllocatorType>(allocator_){
         //
     }
 
@@ -133,7 +133,7 @@ struct object_allocator2:public object_allocator_proxy<ObjectType,AllocatorType>
 public:
 
     template <typename A1,typename A2>
-    object_allocator2(A1 arg1,A2 arg2):allocator_(arg1,arg2),object_allocator_proxy(allocator_){
+    object_allocator2(A1 arg1,A2 arg2):allocator_(arg1,arg2),object_allocator_proxy<ObjectType,AllocatorType>(allocator_){
         //
     }
 
