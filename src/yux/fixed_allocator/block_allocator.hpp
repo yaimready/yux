@@ -21,7 +21,7 @@
 #include "boost/pool/pool.hpp"
 #include "yux/spinlock.hpp"
 
-#define YUX_FIXED_ALLOCATOR_POOL_OFF
+//#define YUX_FIXED_ALLOCATOR_POOL_OFF
 
 namespace yux{
 namespace fixed_allocator{

@@ -53,6 +53,16 @@ public:
             ReadFilterClass,WriteFilterClass,HandlerClass>(this){
         refcnt_=1;
         status_=0;
+        write_cache_.use_zone(get_zone());
+    }
+
+private:
+
+    pool_string_zone& get_zone(){
+        static pool_string_zone zones[256];
+        int n=((int(this)&0xff0)>>4);
+        //printf("pool string zone select %d\n",n);
+        return zones[n];
     }
 
 public:
