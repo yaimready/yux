@@ -18,10 +18,12 @@
 #ifndef YUX_POOL_STRING_HPP_
 #define YUX_POOL_STRING_HPP_
 
-#include "boost/pool/pool.hpp"
+#include <string>
+#include <boost/noncopyable.hpp>
 
 #include "yux/spinlock.hpp"
 #include "yux/linked_ptr_queue.hpp"
+#include "yux/fixed_allocator/bigblock_allocator.hpp"
 
 namespace yux{
 
@@ -85,28 +87,35 @@ namespace yux{
 
 	class pool_string_zone{
 
-	    boost::pool<> pool_;
+	    yux::fixed_allocator::bigblock_allocator<pool_string_block> pool_;
 	    yux::spinlock pool_mutex_;
 	    linked_ptr_queue<pool_string_block> free_queue_;
-	    int total_size_;
+	    int total_cnt_;
 
     public:
 
-        pool_string_zone():pool_(pool_string_block::chunk_size){
-            total_size_=0;
+        pool_string_zone():pool_(1024){
+            total_cnt_=0;
+        }
+
+    public:
+
+        int get_total_count(){
+            yux::spinlock::scoped_lock lock(pool_mutex_);
+            return total_cnt_;
         }
 
     public:
 
 		pool_string_block *allocate(){
-		   // printf("------------------ block malloc! --> %08x\n",this);
+		    //printf("------------------ block malloc! --> %08x\n",this);
 			yux::spinlock::scoped_lock lock(pool_mutex_);
 			pool_string_block * block_ptr=free_queue_.remove_head();
 			if (!block_ptr){
-                //total_size_+=pool_string_block::chunk_size;
-                //printf("true malloc! -- %d\n",total_size_);
-                block_ptr=(pool_string_block *)(pool_.malloc());
-                BOOST_ASSERT(block_ptr!=NULL);
+                if (block_ptr=pool_.allocate()){
+                    total_cnt_++;
+                    //printf("true malloc! -- %d\n",total_cnt_);
+                }
 			}
 			return block_ptr;
 		}
@@ -114,13 +123,26 @@ namespace yux{
 		void deallocate(pool_string_block *block_ptr){
 		    //printf("------------------ block free! --> %08x\n",this);
 			yux::spinlock::scoped_lock lock(pool_mutex_);
+			total_cnt_--;
 			free_queue_.add_tail(block_ptr);
 		}
 
 		void deallocate(pool_string_block *start_block_ptr,pool_string_block *end_block_ptr){
-		    //printf("------------------ block free! --> %08x\n",this);
+		    //printf("------------------ block batch free! --> %08x\n",this);
 		    linked_ptr_queue<pool_string_block> tmp_queue(start_block_ptr,end_block_ptr);
+		    pool_string_block *block_ptr=start_block_ptr;
+		    int recycle_times=0;
+		    while (block_ptr){
+                recycle_times++;
+#ifdef _DEBUG
+                if (block_ptr->next==NULL){
+                    BOOST_ASSERT(block_ptr==end_block_ptr);
+                }
+#endif
+                block_ptr=block_ptr->next;
+		    }
 		    yux::spinlock::scoped_lock lock(pool_mutex_);
+		    total_cnt_+=recycle_times;
 		    free_queue_.add_tail(&tmp_queue);
 		}
 
@@ -184,21 +206,38 @@ namespace yux{
 	private:
 
 		void initialize(){
-			head_block_ptr_=tail_block_ptr_=zone_ptr_->allocate();
-			head_block_ptr_->next=NULL;
-			head_block_ptr_->block_used=0;
-			head_block_ptr_->block_offset=0;
-			write_ptr_=head_block_ptr_->block_data;
-			write_space_=pool_string_block::chunk_capacity;
+			head_block_ptr_=tail_block_ptr_=NULL;
+			write_ptr_=NULL;
+			write_space_=0;
 			length_=0;
 		}
+
+		bool ensure_first_block(){
+            if (head_block_ptr_!=NULL){
+                return true;
+            }
+            head_block_ptr_=tail_block_ptr_=zone_ptr_->allocate();
+            if (head_block_ptr_==NULL){
+                printf("no memory to allocate for pool string.\n");
+                return false;
+            }
+            head_block_ptr_->next=NULL;
+            head_block_ptr_->block_used=0;
+            head_block_ptr_->block_offset=0;
+            write_ptr_=head_block_ptr_->block_data;
+            write_space_=pool_string_block::chunk_capacity;
+            return true;
+        }
 
 	public:
 
 		template <typename AppendFunction>
 		int pop_lambda(int pop_len,AppendFunction append_fn){
-			// if buffer is NULL , then pop string back to object pool
 			pool_string_block *block_ptr=head_block_ptr_;
+			if (block_ptr==NULL){
+                // 如果缓冲区指针为NULL，则不弹出任何字符串
+                return 0;
+			}
 			int buffer_used=0;
 			while (true){
 				// if block data is bigger than buffer space ,
@@ -249,82 +288,10 @@ namespace yux{
 
 	public:
 
-		void prepend(pool_string& input_string){
-			pool_string_block *block_ptr=NULL;
-			for (pool_string::iterator it=input_string.begin();it!=input_string.end();it++){
-				int block_size=it->size;
-				if (block_size){
-					// every block must less or equal than chunk_capacity
-					pool_string_block *new_block_pointer=zone_ptr_->allocate();
-					new_block_pointer->block_used=block_size;
-					new_block_pointer->block_offset=0;
-					memcpy(new_block_pointer->block_data,it->data,block_size);
-					if (block_ptr==NULL){
-						new_block_pointer->next=head_block_ptr_;
-						head_block_ptr_=new_block_pointer;
-					}else{
-						new_block_pointer->next=block_ptr->next;
-						block_ptr->next=new_block_pointer;
-					}
-					block_ptr=new_block_pointer;
-					length_+=block_size;
-				}
-			}
-		}
-
-        // prepend all block from this string to input string
-        // clear this string block !!!
-		void prepend_to(pool_string& input_string){
-		    if (zone_ptr_==input_string.zone_ptr_){
-                // if all blocks in same zone , copy memory is not need !
-                if (length_!=0){
-                    tail_block_ptr_->next=input_string.head_block_ptr_;
-                    input_string.head_block_ptr_=head_block_ptr_;
-                    input_string.length_+=length_;
-                    initialize();
-                }
-		    }else{
-		        // if blocks belong to different zone , copy memcopy will be used !
-		        input_string.prepend(*this);
-		        clear();
-		    }
-		}
-
-		void append(pool_string& input_string){
-			for (pool_string::iterator it=input_string.begin();it!=input_string.end();it++){
-				if (it->size){
-					append(it->data,it->size);
-				}
-			}
-		}
-
-		/*
-
-        // append all block from this string to input string
-        // clear this string block !!!
-		void append_to(pool_string& input_string){
-		    if (zone_ptr_==input_string.zone_ptr_){
-                // if all blocks in same zone , copy memory is not need !
-                if (length_!=0){
-                    input_string.tail_block_ptr_->next=head_block_ptr_;
-                    input_string.tail_block_ptr_=tail_block_ptr_;
-                    input_string.length_+=length_;
-                    input_string.write_ptr_=write_ptr_;
-                    input_string.write_space_=write_space_;
-                    initialize();
-                }
-		    }else{
-		        // if blocks belong to different zone , copy memcopy will be used !
-		        input_string.append(*this);
-		        clear();
-		    }
-		}
-
-		*/
-
-	public:
-
 		void append(const char *data_ptr,int data_size){
+		    if (!ensure_first_block()){
+                return;
+		    }
 			length_+=data_size;
 			//printf("length_=%d , write_space_=%d \n",length_,write_space_);
 			if (data_size>=write_space_){
@@ -340,30 +307,40 @@ namespace yux{
 				for (int i=1;i<block_num;i++){
 					// create new block , fill with full data
 					pool_string_block *last_block_pointer=zone_ptr_->allocate();
-					last_block_pointer->block_used=pool_string_block::chunk_capacity;
-					last_block_pointer->block_offset=0;
-					last_block_pointer->next=NULL;
-					memcpy(last_block_pointer->block_data,data_ptr,pool_string_block::chunk_capacity);
-					// move next
-					data_ptr+=pool_string_block::chunk_capacity;
-					data_size-=pool_string_block::chunk_capacity;
-					// link last block to new block , mark new block as last block
-					tail_block_ptr_->next=last_block_pointer;
-					tail_block_ptr_=last_block_pointer;
+					if (last_block_pointer==NULL){
+                        // 劳资没有内存资源了!
+                        printf("no memory to allocate for pool string.\n");
+                        return;
+					}
+                    last_block_pointer->block_used=pool_string_block::chunk_capacity;
+                    last_block_pointer->block_offset=0;
+                    last_block_pointer->next=NULL;
+                    memcpy(last_block_pointer->block_data,data_ptr,pool_string_block::chunk_capacity);
+                    // move next
+                    data_ptr+=pool_string_block::chunk_capacity;
+                    data_size-=pool_string_block::chunk_capacity;
+                    // link last block to new block , mark new block as last block
+                    tail_block_ptr_->next=last_block_pointer;
+                    tail_block_ptr_=last_block_pointer;
 				}
 				pool_string_block *last_block_pointer=zone_ptr_->allocate();
-				last_block_pointer->block_used=data_size;
-				last_block_pointer->block_offset=0;
-				last_block_pointer->next=NULL;
-				if (data_size!=0){
-					memcpy(last_block_pointer->block_data,data_ptr,data_size);
+				if (last_block_pointer==NULL){
+                    // 劳资没有内存资源了!
+                    printf("no memory to allocate for pool string.\n");
+                    return;
 				}
-				// link last block to new block , mark new block as last block
-				tail_block_ptr_->next=last_block_pointer;
-				tail_block_ptr_=last_block_pointer;
-				// set write setting for next write
-				write_ptr_=last_block_pointer->block_data+data_size;
-				write_space_=pool_string_block::chunk_capacity-data_size;
+                last_block_pointer->block_used=data_size;
+                last_block_pointer->block_offset=0;
+                last_block_pointer->next=NULL;
+                if (data_size!=0){
+                    memcpy(last_block_pointer->block_data,data_ptr,data_size);
+                }
+                // link last block to new block , mark new block as last block
+                tail_block_ptr_->next=last_block_pointer;
+                tail_block_ptr_=last_block_pointer;
+                // set write setting for next write
+                write_ptr_=last_block_pointer->block_data+data_size;
+                write_space_=pool_string_block::chunk_capacity-data_size;
 			}else{
 				memcpy(write_ptr_,data_ptr,data_size);
 				write_ptr_+=data_size;
@@ -373,18 +350,26 @@ namespace yux{
 		}
 
 		void append(char ch){
+		    if (!ensure_first_block()){
+                return;
+		    }
 			length_++;
 			tail_block_ptr_->block_used++;
 			if (write_space_==1){
 				*write_ptr_=ch;
 				pool_string_block *last_block_pointer=zone_ptr_->allocate();
-				last_block_pointer->next=NULL;
-				last_block_pointer->block_used=0;
-				last_block_pointer->block_offset=0;
-				write_ptr_=last_block_pointer->block_data;
-				write_space_=pool_string_block::chunk_capacity;
-				tail_block_ptr_->next=last_block_pointer;
-				tail_block_ptr_=last_block_pointer;
+				if (last_block_pointer==NULL){
+                    // 劳资没有内存资源了!
+                    printf("no memory to allocate for pool string.\n");
+                    return;
+				}
+                last_block_pointer->next=NULL;
+                last_block_pointer->block_used=0;
+                last_block_pointer->block_offset=0;
+                write_ptr_=last_block_pointer->block_data;
+                write_space_=pool_string_block::chunk_capacity;
+                tail_block_ptr_->next=last_block_pointer;
+                tail_block_ptr_=last_block_pointer;
 			}else{
 				*(write_ptr_++)=ch;
 				write_space_--;
@@ -408,10 +393,23 @@ namespace yux{
 			return *this;
 		}
 
+		pool_string& operator +=(pool_string& input_string){
+			for (pool_string::iterator it=input_string.begin();it!=input_string.end();it++){
+				if (it->size){
+					append(it->data,it->size);
+				}
+			}
+			return *this;
+		}
+
 	public:
 
 		iterator begin(){
-			return pool_string_iterator(head_block_ptr_);
+		    if (length_!=0){
+                return pool_string_iterator(head_block_ptr_);
+		    }else{
+                return end();
+		    }
 		}
 
 		iterator& end(){
@@ -420,8 +418,8 @@ namespace yux{
 		}
 
 		void clear(){
-		    // free blocks will take long time ...
-		    if (length_){
+            // head_block_ptr_不是NULL，代表被分配过空间
+		    if (head_block_ptr_!=NULL){
                 free_blocks();
                 initialize();
 		    }
@@ -450,6 +448,7 @@ namespace yux{
     public:
 
         void use_zone(pool_string_zone &zone){
+            clear();
             zone_ptr_=&zone;
         }
 
@@ -460,9 +459,7 @@ namespace yux{
 		}
 
         void free_blocks(){
-            // warning : function only free blocks
-            // it doesn't initialize pool_string self !
-            if (zone_ptr_){
+            if (head_block_ptr_!=NULL){
                 zone_ptr_->deallocate(head_block_ptr_,tail_block_ptr_);
             }
 		}
